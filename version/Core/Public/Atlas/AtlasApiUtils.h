@@ -196,9 +196,13 @@ namespace ArkApi
 				APlayerState* player_state = controller->PlayerStateField();
 				if (player_state != nullptr)
 				{
-					auto* steam_net_id = static_cast<FUniqueNetIdString*>(player_state->UniqueIdField()
-						.UniqueNetId.Get());
+						auto* unique_net_id = player_state->UniqueIdField().UniqueNetId.Get();
+					if (unique_net_id == nullptr)
+					{
+						return 0;
+					}
 
+					auto* steam_net_id = static_cast<FUniqueNetIdString*>(unique_net_id);
 					const FString steam_id_str = steam_net_id->UniqueNetIdStr;
 
 					try
