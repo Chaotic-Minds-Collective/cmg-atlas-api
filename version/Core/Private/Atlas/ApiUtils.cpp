@@ -59,7 +59,7 @@ namespace AtlasApi
 
 		if (steam_id != 0)
 		{
-			steam_id_map_[steam_id] = player_controller;
+			steam_id_map_[steam_id] = TWeakObjectPtr<AShooterPlayerController>(player_controller);
 		}
 	}
 
@@ -68,11 +68,18 @@ namespace AtlasApi
 		if (!player_controller)
 			return;
 
-		const uint64 steam_id = ArkApi::IApiUtils::GetSteamIdFromController(player_controller);
-
-		if (steam_id != 0)
+		// Do not depend on Steam ID lookup during logout: the network ID may already
+		// be unavailable. Remove every entry that points to this controller.
+		for (auto iter = steam_id_map_.begin(); iter != steam_id_map_.end();)
 		{
-			steam_id_map_.erase(steam_id);
+			if (iter->second.Get() == player_controller)
+			{
+				iter = steam_id_map_.erase(iter);
+			}
+			else
+			{
+				++iter;
+			}
 		}
 	}
 
@@ -85,10 +92,9 @@ namespace AtlasApi
 
 		auto iter = steam_id_map_.find(steam_id);
 
-		if (iter != steam_id_map_.end()
-			&& iter->first == steam_id)
+		if (iter != steam_id_map_.end())
 		{
-			found_player = iter->second;
+			found_player = iter->second.Get();
 		}
 
 		return found_player;

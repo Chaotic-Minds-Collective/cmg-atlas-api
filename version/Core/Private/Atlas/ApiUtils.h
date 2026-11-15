@@ -2,6 +2,8 @@
 
 #include <IApiUtils.h>
 
+#include <unordered_map>
+
 namespace AtlasApi
 {
 	class ApiUtils : public ArkApi::IApiUtils
@@ -35,6 +37,7 @@ namespace AtlasApi
 		AShooterGameMode* shooter_game_mode_{nullptr};
 		ArkApi::ServerStatus status_{0};
 		UShooterCheatManager* cheatmanager_{ nullptr };
-		std::unordered_map<uint64, AShooterPlayerController*> steam_id_map_;
+		// Controllers are Unreal objects and may be destroyed independently of this cache.
+		std::unordered_map<uint64, TWeakObjectPtr<AShooterPlayerController>> steam_id_map_;
 	};
 } // namespace AtlasApi

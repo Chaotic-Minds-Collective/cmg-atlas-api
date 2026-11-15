@@ -159,17 +159,24 @@ namespace AtlasApi
 		return URCONServer_Init_original(_this, Password, InPort, SCheatManager);
 	}
 
-	void  Hook_AShooterPlayerController_Possess(AShooterPlayerController* _this, APawn* inPawn)
+	void Hook_AShooterPlayerController_Possess(AShooterPlayerController* _this, APawn* inPawn)
 	{
-		dynamic_cast<ApiUtils&>(*API::game_api->GetApiUtils()).SetPlayerController(_this);
-
 		AShooterPlayerController_Possess_original(_this, inPawn);
+
+		// Cache the controller after the game has completed possession setup.
+		dynamic_cast<ApiUtils&>(*API::game_api->GetApiUtils()).SetPlayerController(_this);
 	}
 
-	void  Hook_AShooterGameMode_Logout(AShooterGameMode* _this, AController* Exiting)
+	void Hook_AShooterGameMode_Logout(AShooterGameMode* _this, AController* Exiting)
 	{
-		AShooterPlayerController* Exiting_SPC = static_cast<AShooterPlayerController*>(Exiting);
-		dynamic_cast<ApiUtils&>(*API::game_api->GetApiUtils()).RemovePlayerController(Exiting_SPC);
+		// Logout can also be invoked for non-player controllers. Only pass a real
+		// shooter player controller to the ATLAS player cache.
+		if (Exiting != nullptr && Exiting->IsA(AShooterPlayerController::GetPrivateStaticClass()))
+		{
+			auto* exiting_player_controller = static_cast<AShooterPlayerController*>(Exiting);
+			dynamic_cast<ApiUtils&>(*API::game_api->GetApiUtils()).RemovePlayerController(
+				exiting_player_controller);
+		}
 
 		AShooterGameMode_Logout_original(_this, Exiting);
 	}
