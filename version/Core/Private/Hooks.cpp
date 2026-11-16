@@ -45,6 +45,11 @@ namespace API
 			? target
 			: hook_vector.back()->detour;
 
+		// Allocate bookkeeping before changing executable code so allocation
+		// failure cannot leave an untracked detour installed.
+		hook_vector.reserve(hook_vector.size() + 1);
+		auto hook = std::make_shared<Hook>(new_target, detour, original);
+
 		LPVOID trampoline = nullptr;
 		const MH_STATUS create_status = MH_CreateHook(new_target, detour, &trampoline);
 		if (create_status != MH_OK)
@@ -71,7 +76,6 @@ namespace API
 			}
 			else
 			{
-				auto hook = std::make_shared<Hook>(new_target, detour, original);
 				hook->enabled = false;
 				if (original != nullptr)
 				{
@@ -90,7 +94,6 @@ namespace API
 			*original = trampoline;
 		}
 
-		auto hook = std::make_shared<Hook>(new_target, detour, original);
 		hook->enabled = true;
 		hook_vector.push_back(std::move(hook));
 		return true;
@@ -121,6 +124,7 @@ namespace API
 
 		const auto requested_hook = *iter;
 		std::vector<std::shared_ptr<Hook>> removed_hooks;
+		removed_hooks.reserve(hook_vector.size());
 
 		// Remove from the end of the chain first so no remaining detour can
 		// call through a trampoline that has already been removed.
@@ -135,13 +139,20 @@ namespace API
 					func_name, MH_StatusToString(remove_status));
 
 				bool restored = true;
-				for (auto restore = removed_hooks.rbegin(); restore != removed_hooks.rend(); ++restore)
+				try
 				{
-					if (!SetHookInternal(func_name, (*restore)->detour, (*restore)->original))
+					for (auto restore = removed_hooks.rbegin(); restore != removed_hooks.rend(); ++restore)
 					{
-						restored = false;
-						break;
+						if (!SetHookInternal(func_name, (*restore)->detour, (*restore)->original))
+						{
+							restored = false;
+							break;
+						}
 					}
+				}
+				catch (...)
+				{
+					restored = false;
 				}
 
 				if (!restored)
@@ -164,21 +175,31 @@ namespace API
 		// The requested hook is now removed. Rebuild the remaining chain in
 		// its original order, refreshing every surviving trampoline.
 		bool requested_hook_removed = false;
-		for (auto restore = removed_hooks.rbegin(); restore != removed_hooks.rend(); ++restore)
+		try
 		{
-			if (*restore == requested_hook)
+			for (auto restore = removed_hooks.rbegin(); restore != removed_hooks.rend(); ++restore)
 			{
-				requested_hook_removed = true;
-				continue;
-			}
+				if (*restore == requested_hook)
+				{
+					requested_hook_removed = true;
+					continue;
+				}
 
-			if (!SetHookInternal(func_name, (*restore)->detour, (*restore)->original))
-			{
-				Log::GetLog()->critical(
-					"Hook chain for {} was only partially rebuilt after removing a hook; restart the server before changing this hook chain again",
-					func_name);
-				return false;
+				if (!SetHookInternal(func_name, (*restore)->detour, (*restore)->original))
+				{
+					Log::GetLog()->critical(
+						"Hook chain for {} was only partially rebuilt after removing a hook; restart the server before changing this hook chain again",
+						func_name);
+					return false;
+				}
 			}
+		}
+		catch (...)
+		{
+			Log::GetLog()->critical(
+				"Hook chain for {} could not be fully rebuilt after removing a hook; restart the server before changing this hook chain again",
+				func_name);
+			return false;
 		}
 
 		return requested_hook_removed;
