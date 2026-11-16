@@ -60,6 +60,12 @@ namespace API
 			return false;
 		}
 
+		// Publish the trampoline before enabling can allow a detour to run.
+		if (original != nullptr)
+		{
+			*original = trampoline;
+		}
+
 		const MH_STATUS enable_status = MH_EnableHook(new_target);
 		if (enable_status != MH_OK)
 		{
@@ -77,21 +83,12 @@ namespace API
 			else
 			{
 				hook->enabled = false;
-				if (original != nullptr)
-				{
-					*original = trampoline;
-				}
 				hook_vector.push_back(std::move(hook));
 				Log::GetLog()->critical(
 					"Failed to enable hook for {} ({}) and rollback failed ({}); hook bookkeeping was retained",
 					func_name, MH_StatusToString(enable_status), MH_StatusToString(remove_status));
 			}
 			return false;
-		}
-
-		if (original != nullptr)
-		{
-			*original = trampoline;
 		}
 
 		hook->enabled = true;
@@ -170,10 +167,14 @@ namespace API
 			}
 			removed_hooks.push_back(hook);
 			hook_vector.pop_back();
+			if (hook == requested_hook)
+			{
+				break;
+			}
 		}
 
-		// The requested hook is now removed. Rebuild the remaining chain in
-		// its original order, refreshing every surviving trampoline.
+		// The preceding hooks remain installed. Rebuild only the removed
+		// suffix that must survive, in its original order.
 		bool requested_hook_removed = false;
 		try
 		{
