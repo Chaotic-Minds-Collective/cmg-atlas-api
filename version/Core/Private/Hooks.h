@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 namespace API
 {
@@ -36,6 +37,7 @@ namespace API
 			LPVOID target;
 			LPVOID detour;
 			LPVOID* original;
+			bool enabled{false};
 		};
 
 		std::unordered_map<std::string, std::vector<std::shared_ptr<Hook>>> all_hooks_;
