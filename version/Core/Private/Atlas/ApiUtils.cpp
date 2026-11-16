@@ -50,6 +50,8 @@ namespace AtlasApi
 		return cheatmanager_;
 	}
 
+	// Player controller cache
+
 	void ApiUtils::SetPlayerController(AShooterPlayerController* player_controller)
 	{
 		if (!player_controller)
@@ -59,7 +61,8 @@ namespace AtlasApi
 
 		if (steam_id != 0)
 		{
-			steam_id_map_[steam_id] = TWeakObjectPtr<AShooterPlayerController>(player_controller);
+			// Store an Unreal weak reference, not a raw UObject pointer.
+			steam_id_map_[steam_id] = GetWeakReference(player_controller);
 		}
 	}
 
@@ -94,7 +97,10 @@ namespace AtlasApi
 
 		if (iter != steam_id_map_.end())
 		{
-			found_player = iter->second.Get();
+			// TWeakObjectPtr::Get is non-const in this SDK wrapper, so read
+			// through a local copy while keeping this lookup method const.
+			auto weak_controller = iter->second;
+			found_player = weak_controller.Get();
 		}
 
 		return found_player;
