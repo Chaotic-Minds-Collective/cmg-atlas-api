@@ -15,7 +15,7 @@
 
 namespace API
 {
-	constexpr float api_version = 1.7f;
+	constexpr float api_version = 1.71f;
 
 	AtlasBaseApi::AtlasBaseApi()
 		: commands_(std::make_unique<ArkApi::Commands>()),
@@ -27,7 +27,7 @@ namespace API
 	bool AtlasBaseApi::Init()
 	{
 		Log::GetLog()->info("-----------------------------------------------");
-		Log::GetLog()->info("YAPI V{:.1f}", GetVersion());
+		Log::GetLog()->info("YAPI V{:.2f}", GetVersion());
 		Log::GetLog()->info("Loading...\n");
 
 		PdbReader pdb_reader;
