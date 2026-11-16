@@ -343,8 +343,19 @@ namespace API
 				if (save_world)
 				{
 					Log::GetLog()->info("Saving world before reloading plugins ...");
-					ArkApi::GetApiUtils().GetShooterGameMode()->SaveWorld();
-					Log::GetLog()->info("World saved.");
+					auto* game_mode = ArkApi::GetApiUtils().GetShooterGameMode();
+					if (game_mode == nullptr)
+					{
+						Log::GetLog()->error("Cannot reload plugins because the game mode is unavailable for the configured world save.");
+						return;
+					}
+
+#ifdef ATLAS_GAME
+					game_mode->SaveWorld(ESaveWorldType::Normal, false);
+#else
+					game_mode->SaveWorld();
+#endif
+					Log::GetLog()->info("World save requested.");
 
 					save_world = false; // do not save again if multiple plugins are reloaded in this loop
 				}
