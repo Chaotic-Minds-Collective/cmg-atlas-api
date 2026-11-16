@@ -1,0 +1,28 @@
+name: ATLAS API Build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atlas-api-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-atlas:
+    name: Build ATLAS x64 API
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Configure MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build ATLAS x64 configuration
+        run: msbuild version.sln /m /p:Configuration=Atlas /p:Platform=x64 /p:BuildProjectReferences=true /verbosity:minimal
