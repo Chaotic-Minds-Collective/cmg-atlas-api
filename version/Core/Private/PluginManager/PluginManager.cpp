@@ -1,8 +1,11 @@
 #include "PluginManager.h"
 
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 
 #include <Logger/Logger.h>
 #include <Tools.h>
@@ -12,6 +15,108 @@
 
 namespace API
 {
+	namespace
+	{
+		namespace fs = std::filesystem;
+
+		bool IsValidPluginName(const std::string& plugin_name)
+		{
+			if (plugin_name.empty() || plugin_name.size() > 128 || plugin_name == "." || plugin_name == "..")
+			{
+				return false;
+			}
+
+			return std::all_of(plugin_name.begin(), plugin_name.end(),
+			                   [](unsigned char character)
+			                   {
+				                   return std::isalnum(character) || character == '_' || character == '-' || character == '.';
+			                   });
+		}
+
+		fs::path GetPluginRootPath()
+		{
+			return fs::path(Tools::GetCurrentDir()) / game_api->GetApiName() / "Plugins";
+		}
+
+		fs::path ResolvePluginDirectory(const std::string& plugin_name)
+		{
+			if (!IsValidPluginName(plugin_name))
+			{
+				throw std::invalid_argument("Invalid plugin name");
+			}
+
+			const fs::path root = fs::weakly_canonical(GetPluginRootPath());
+			if (!fs::exists(root) || !fs::is_directory(root))
+			{
+				throw std::runtime_error("Plugin directory does not exist");
+			}
+
+			const fs::path unresolved = root / plugin_name;
+			const auto status = fs::symlink_status(unresolved);
+			if (fs::is_symlink(status))
+			{
+				throw std::runtime_error("Plugin directories cannot be symbolic links");
+			}
+			if (!fs::is_directory(status))
+			{
+				throw std::runtime_error("Plugin directory does not exist");
+			}
+
+			const fs::path resolved = fs::weakly_canonical(unresolved);
+			if (resolved.parent_path() != root)
+			{
+				throw std::runtime_error("Plugin directory escapes the configured plugin root");
+			}
+
+			return resolved;
+		}
+
+		fs::path ResolvePluginFilePath(const std::string& plugin_name, const std::string& filename, bool required)
+		{
+			const fs::path plugin_directory = ResolvePluginDirectory(plugin_name);
+			const fs::path unresolved = plugin_directory / filename;
+			const auto status = fs::symlink_status(unresolved);
+
+			if (fs::is_symlink(status))
+			{
+				throw std::runtime_error("Plugin files cannot be symbolic links");
+			}
+			if (!fs::exists(status))
+			{
+				if (required)
+				{
+					throw std::runtime_error("Required plugin file does not exist: " + filename);
+				}
+				return unresolved;
+			}
+			if (!fs::is_regular_file(status))
+			{
+				throw std::runtime_error("Plugin path is not a regular file: " + filename);
+			}
+
+			const fs::path resolved = fs::weakly_canonical(unresolved);
+			if (resolved.parent_path() != plugin_directory)
+			{
+				throw std::runtime_error("Plugin file escapes its plugin directory");
+			}
+
+			return resolved;
+		}
+
+		std::string JoinPluginNames(const std::vector<std::string>& names)
+		{
+			std::ostringstream result;
+			for (size_t index = 0; index < names.size(); ++index)
+			{
+				if (index != 0)
+				{
+					result << ", ";
+				}
+				result << names[index];
+			}
+			return result.str();
+		}
+	} // namespace
 	PluginManager& PluginManager::Get()
 	{
 		static PluginManager instance;
@@ -20,20 +125,32 @@ namespace API
 
 	nlohmann::json PluginManager::GetAllPDBConfigs()
 	{
-		namespace fs = std::filesystem;
+		auto result = nlohmann::json::object();
+		const auto plugin_root = GetPluginRootPath();
 
-		const std::string dir_path = Tools::GetCurrentDir() + "/" + game_api->GetApiName() + "/Plugins";
-
-		auto result = nlohmann::json({});
-
-		for (const auto& dir_name : fs::directory_iterator(dir_path))
+		if (!fs::exists(plugin_root) || !fs::is_directory(plugin_root))
 		{
-			const auto& path = dir_name.path();
-			const auto filename = path.filename().stem().generic_string();
+			return result;
+		}
 
+		for (const auto& entry : fs::directory_iterator(plugin_root))
+		{
 			try
 			{
-				const auto plugin_pdb_config = ReadPluginPDBConfig(filename);
+				const auto status = entry.symlink_status();
+				if (fs::is_symlink(status) || !fs::is_directory(status))
+				{
+					continue;
+				}
+
+				const auto plugin_name = entry.path().filename().string();
+				if (!IsValidPluginName(plugin_name))
+				{
+					Log::GetLog()->warn("Skipping plugin directory with an invalid name");
+					continue;
+				}
+
+				const auto plugin_pdb_config = ReadPluginPDBConfig(plugin_name);
 				MergePdbConfig(result, plugin_pdb_config);
 			}
 			catch (const std::exception& error)
@@ -47,12 +164,8 @@ namespace API
 
 	nlohmann::json PluginManager::ReadPluginPDBConfig(const std::string& plugin_name)
 	{
-		namespace fs = std::filesystem;
-
-		auto plugin_pdb_config = nlohmann::json({});
-
-		const std::string dir_path = Tools::GetCurrentDir() + "/" + game_api->GetApiName() + "/Plugins/" + plugin_name;
-		const std::string config_path = dir_path + "/PdbConfig.json";
+		auto plugin_pdb_config = nlohmann::json::object();
+		const auto config_path = ResolvePluginFilePath(plugin_name, "PdbConfig.json", false);
 
 		if (!fs::exists(config_path))
 		{
@@ -60,12 +173,12 @@ namespace API
 		}
 
 		std::ifstream file{config_path};
-		if (file.is_open())
+		if (!file.is_open())
 		{
-			file >> plugin_pdb_config;
-			file.close();
+			throw std::runtime_error("Failed to open PdbConfig.json for plugin " + plugin_name);
 		}
 
+		file >> plugin_pdb_config;
 		return plugin_pdb_config;
 	}
 
@@ -88,42 +201,41 @@ namespace API
 
 	void PluginManager::LoadAllPlugins()
 	{
-		namespace fs = std::filesystem;
-
-		const std::string dir_path = Tools::GetCurrentDir() + "/" + game_api->GetApiName() + "/Plugins";
-
-		for (const auto& dir_name : fs::directory_iterator(dir_path))
+		const auto plugin_root = GetPluginRootPath();
+		if (!fs::exists(plugin_root) || !fs::is_directory(plugin_root))
 		{
-			const auto& path = dir_name.path();
-			if (!is_directory(path))
-			{
-				continue;
-			}
+			Log::GetLog()->warn("Plugin directory does not exist: {}", plugin_root.string());
+			return;
+		}
 
-			const auto filename = path.filename().stem().generic_string();
-
-			const std::string dir_file_path = Tools::GetCurrentDir() + "/" + game_api->GetApiName() + "/Plugins/" +
-				filename;
-			const std::string full_dll_path = dir_file_path + "/" + filename + ".dll";
-			const std::string new_full_dll_path = dir_file_path + "/" + filename + ".dll.ArkApi";
-
+		std::vector<std::string> pending_plugins;
+		for (const auto& entry : fs::directory_iterator(plugin_root))
+		{
 			try
 			{
-				// Loads the new .dll.ArkApi if it exists on startup as well
-				if (fs::exists(new_full_dll_path))
+				const auto status = entry.symlink_status();
+				if (fs::is_symlink(status) || !fs::is_directory(status))
 				{
-					copy_file(new_full_dll_path, full_dll_path, fs::copy_options::overwrite_existing);
-					fs::remove(new_full_dll_path);
+					continue;
 				}
 
-				std::stringstream stream;
+				const auto plugin_name = entry.path().filename().string();
+				if (!IsValidPluginName(plugin_name))
+				{
+					Log::GetLog()->warn("Skipping plugin directory with an invalid name");
+					continue;
+				}
 
-				std::shared_ptr<Plugin>& plugin = LoadPlugin(filename);
+				ResolvePluginDirectory(plugin_name);
+				const auto update_path = ResolvePluginFilePath(plugin_name, plugin_name + ".dll.ArkApi", false);
+				if (fs::exists(update_path))
+				{
+					const auto plugin_path = ResolvePluginFilePath(plugin_name, plugin_name + ".dll", false);
+					fs::copy_file(update_path, plugin_path, fs::copy_options::overwrite_existing);
+					fs::remove(update_path);
+				}
 
-				stream << "Loaded plugin " << (plugin->full_name.empty() ? plugin->name : plugin->full_name) << " V" <<
-					plugin->version << " (" << plugin->description << ")";
-
-				Log::GetLog()->info(stream.str());
+				pending_plugins.push_back(plugin_name);
 			}
 			catch (const std::exception& error)
 			{
@@ -131,11 +243,79 @@ namespace API
 			}
 		}
 
-		CheckPluginsDependencies();
+		std::sort(pending_plugins.begin(), pending_plugins.end());
+		size_t loaded_count = 0;
 
-		// Set auto plugins reloading
+		while (!pending_plugins.empty())
+		{
+			bool made_progress = false;
+
+			for (auto plugin = pending_plugins.begin(); plugin != pending_plugins.end();)
+			{
+				try
+				{
+					const auto plugin_info = ReadPluginInfo(*plugin);
+					const auto dependencies = plugin_info["Dependencies"].get<std::vector<std::string>>();
+					const bool dependencies_loaded = std::all_of(
+						dependencies.begin(), dependencies.end(),
+						[this](const std::string& dependency)
+						{
+							return IsPluginLoaded(dependency);
+						});
+
+					if (!dependencies_loaded)
+					{
+						++plugin;
+						continue;
+					}
+
+					const std::string plugin_name = *plugin;
+					const auto& loaded_plugin = LoadPlugin(plugin_name);
+					Log::GetLog()->info("Loaded plugin {} V{} ({})",
+					                    loaded_plugin->full_name.empty() ? loaded_plugin->name : loaded_plugin->full_name,
+				                    loaded_plugin->version, loaded_plugin->description);
+					plugin = pending_plugins.erase(plugin);
+					++loaded_count;
+					made_progress = true;
+				}
+				catch (const std::exception& error)
+				{
+					Log::GetLog()->warn("Failed to load plugin {}: {}", *plugin, error.what());
+					plugin = pending_plugins.erase(plugin);
+					made_progress = true;
+				}
+			}
+
+			if (!made_progress)
+			{
+				for (const auto& plugin_name : pending_plugins)
+				{
+					try
+					{
+						const auto plugin_info = ReadPluginInfo(plugin_name);
+						const auto dependencies = plugin_info["Dependencies"].get<std::vector<std::string>>();
+						std::vector<std::string> unresolved;
+						for (const auto& dependency : dependencies)
+						{
+							if (!IsPluginLoaded(dependency))
+							{
+								unresolved.push_back(dependency);
+							}
+						}
+						Log::GetLog()->error("Skipping plugin {} because dependencies are unresolved: {}",
+						                    plugin_name, JoinPluginNames(unresolved));
+					}
+					catch (const std::exception& error)
+					{
+						Log::GetLog()->error("Skipping plugin {}: {}", plugin_name, error.what());
+					}
+				}
+				break;
+			}
+		}
+
+		// Set auto plugins reloading.
 		auto settings = ReadSettingsConfig();
-
 		enable_plugin_reload_ = settings["settings"].value("AutomaticPluginReloading", false);
 		if (enable_plugin_reload_)
 		{
@@ -143,77 +323,80 @@ namespace API
 			save_world_before_reload_ = settings["settings"].value("SaveWorldBeforePluginReload", true);
 		}
 
-		Log::GetLog()->info("Loaded all plugins\n");
+		Log::GetLog()->info("Finished loading plugins; {} loaded, {} unresolved", loaded_count, pending_plugins.size());
 	}
 
 	std::shared_ptr<Plugin>& PluginManager::LoadPlugin(const std::string& plugin_name) noexcept(false)
 	{
-		namespace fs = std::filesystem;
-
-		const std::string dir_path = Tools::GetCurrentDir() + "/" + game_api->GetApiName() + "/Plugins/" + plugin_name;
-		const std::string full_dll_path = dir_path + "/" + plugin_name + ".dll";
-
-		if (!fs::exists(full_dll_path))
-		{
-			throw std::runtime_error("Plugin " + plugin_name + " does not exist");
-		}
-
 		if (IsPluginLoaded(plugin_name))
 		{
 			throw std::runtime_error("Plugin " + plugin_name + " was already loaded");
 		}
 
-		auto plugin_info = ReadPluginInfo(plugin_name);
+		const auto full_dll_path = ResolvePluginFilePath(plugin_name, plugin_name + ".dll", true);
+		const auto plugin_info = ReadPluginInfo(plugin_name);
+		const auto dependencies = plugin_info["Dependencies"].get<std::vector<std::string>>();
 
-		// Check version		
+		std::vector<std::string> missing_dependencies;
+		for (const auto& dependency : dependencies)
+		{
+			if (!IsPluginLoaded(dependency))
+			{
+				missing_dependencies.push_back(dependency);
+			}
+		}
+		if (!missing_dependencies.empty())
+		{
+			throw std::runtime_error("Plugin " + plugin_name + " requires unloaded dependencies: " +
+			                         JoinPluginNames(missing_dependencies));
+		}
+
 		const auto required_version = static_cast<float>(plugin_info["MinApiVersion"]);
 		if (required_version != .0f && game_api->GetVersion() < required_version)
 		{
 			throw std::runtime_error("Plugin " + plugin_name + " requires newer API version!");
 		}
 
-		HINSTANCE h_module = LoadLibraryA(full_dll_path.c_str());
+		HINSTANCE h_module = LoadLibraryA(full_dll_path.string().c_str());
 		if (h_module == nullptr)
 		{
 			throw std::runtime_error(
 				"Failed to load plugin - " + plugin_name + "\nError code: " + std::to_string(GetLastError()));
 		}
 
-		// Calls Plugin_Init (if found) after loading DLL
-		// Note: DllMain callbacks during LoadLibrary is load-locked so we cannot do things like WaitForMultipleObjects on threads
-		using pfnPluginInit = void(__fastcall*)();
-		const auto pfn_init = reinterpret_cast<pfnPluginInit>(GetProcAddress(h_module, "Plugin_Init"));
-		if (pfn_init != nullptr)
+		try
 		{
-			pfn_init();
-		}
+			// Plugin_Init is called after LoadLibrary returns, outside the loader lock.
+			using pfnPluginInit = void(__fastcall*)();
+			const auto pfn_init = reinterpret_cast<pfnPluginInit>(GetProcAddress(h_module, "Plugin_Init"));
+			if (pfn_init != nullptr)
+			{
+				pfn_init();
+			}
 
-		return loaded_plugins_.emplace_back(std::make_shared<Plugin>(h_module, plugin_name, plugin_info["FullName"],
-		                                                             plugin_info["Description"], plugin_info["Version"],
-		                                                             plugin_info["MinApiVersion"],
-		                                                             plugin_info["Dependencies"]));
+			auto plugin = std::make_shared<Plugin>(h_module, plugin_name, plugin_info["FullName"],
+			                                      plugin_info["Description"], plugin_info["Version"],
+			                                      plugin_info["MinApiVersion"], dependencies);
+			loaded_plugins_.push_back(std::move(plugin));
+			return loaded_plugins_.back();
+		}
+		catch (...)
+		{
+			FreeLibrary(h_module);
+			throw;
+		}
 	}
 
 	void PluginManager::UnloadPlugin(const std::string& plugin_name) noexcept(false)
 	{
-		namespace fs = std::filesystem;
-
 		const auto iter = FindPlugin(plugin_name);
 		if (iter == loaded_plugins_.end())
 		{
 			throw std::runtime_error("Plugin " + plugin_name + " is not loaded");
 		}
 
-		const std::string dir_path = Tools::GetCurrentDir() + "/" + game_api->GetApiName() + "/Plugins/" + plugin_name;
-		const std::string full_dll_path = dir_path + "/" + plugin_name + ".dll";
+		ResolvePluginFilePath(plugin_name, plugin_name + ".dll", true);
 
-		if (!fs::exists(full_dll_path.c_str()))
-		{
-			throw std::runtime_error("Plugin " + plugin_name + " does not exist");
-		}
-
-		// Calls Plugin_Unload (if found) just before unloading DLL to let DLL gracefully clean up
-		// Note: DllMain callbacks during FreeLibrary is load-locked so we cannot do things like WaitForMultipleObjects on threads
 		using pfnPluginUnload = void(__fastcall*)();
 		const auto pfn_unload = reinterpret_cast<pfnPluginUnload>(GetProcAddress((*iter)->h_module, "Plugin_Unload"));
 		if (pfn_unload != nullptr)
@@ -228,59 +411,48 @@ namespace API
 				"Failed to unload plugin - " + plugin_name + "\nError code: " + std::to_string(GetLastError()));
 		}
 
-		loaded_plugins_.erase(remove(loaded_plugins_.begin(), loaded_plugins_.end(), *iter), loaded_plugins_.end());
+		loaded_plugins_.erase(std::remove(loaded_plugins_.begin(), loaded_plugins_.end(), *iter), loaded_plugins_.end());
 	}
 
 	nlohmann::json PluginManager::ReadPluginInfo(const std::string& plugin_name)
 	{
-		nlohmann::json plugin_info_result({});
-		nlohmann::json plugin_info({});
+		nlohmann::json plugin_info = nlohmann::json::object();
+		const auto config_path = ResolvePluginFilePath(plugin_name, "PluginInfo.json", false);
 
-		const std::string dir_path = Tools::GetCurrentDir() + "/" + game_api->GetApiName() + "/Plugins/" + plugin_name;
-		const std::string config_path = dir_path + "/PluginInfo.json";
-
-		std::ifstream file{config_path};
-		if (file.is_open())
+		if (fs::exists(config_path))
 		{
+			std::ifstream file{config_path};
+			if (!file.is_open())
+			{
+				throw std::runtime_error("Failed to open PluginInfo.json for plugin " + plugin_name);
+			}
 			file >> plugin_info;
-			file.close();
 		}
 
-		try
+		if (!plugin_info.is_object())
 		{
-			plugin_info_result["FullName"] = plugin_info.value("FullName", "");
-			plugin_info_result["Description"] = plugin_info.value("Description", "No description");
-			plugin_info_result["Version"] = plugin_info.value("Version", 1.00f);
-			plugin_info_result["MinApiVersion"] = plugin_info.value("MinApiVersion", .0f);
-			plugin_info_result["Dependencies"] = plugin_info.value("Dependencies", std::vector<std::string>{});
-		}
-		catch (const std::exception& error)
-		{
-			Log::GetLog()->warn("({}) {}", __FUNCTION__, error.what());
+			throw std::runtime_error("PluginInfo.json must contain a JSON object for plugin " + plugin_name);
 		}
 
-		return plugin_info_result;
-	}
-
-	void PluginManager::CheckPluginsDependencies()
-	{
-		for (const auto& plugin : loaded_plugins_)
+		const auto dependencies = plugin_info.value("Dependencies", std::vector<std::string>{});
+		for (const auto& dependency : dependencies)
 		{
-			if (plugin->dependencies.empty())
+			if (!IsValidPluginName(dependency) || dependency == plugin_name)
 			{
-				continue;
-			}
-
-			for (const std::string& dependency : plugin->dependencies)
-			{
-				if (!IsPluginLoaded(dependency))
-				{
-					Log::GetLog()->error("Plugin {} is  missing! {} might not work correctly", dependency,
-					                     plugin->name);
-				}
+				throw std::runtime_error("Plugin " + plugin_name + " declares an invalid dependency name");
 			}
 		}
+
+		nlohmann::json result = nlohmann::json::object();
+		result["FullName"] = plugin_info.value("FullName", std::string{});
+		result["Description"] = plugin_info.value("Description", std::string{"No description"});
+		result["Version"] = plugin_info.value("Version", 1.00f);
+		result["MinApiVersion"] = plugin_info.value("MinApiVersion", .0f);
+		result["Dependencies"] = dependencies;
+		return result;
 	}
+
+	
 
 	std::vector<std::shared_ptr<Plugin>>::const_iterator PluginManager::FindPlugin(const std::string& plugin_name)
 	{
@@ -316,30 +488,37 @@ namespace API
 
 	void PluginManager::DetectPluginChanges()
 	{
-		namespace fs = std::filesystem;
-
-		// Prevents saving world multiple times if multiple plugins are queued to be reloaded
-		bool save_world = save_world_before_reload_;
-
-		for (const auto& dir_name : fs::directory_iterator(
-			     Tools::GetCurrentDir() + "/" + game_api->GetApiName() + "/Plugins"))
+		const auto plugin_root = GetPluginRootPath();
+		if (!fs::exists(plugin_root) || !fs::is_directory(plugin_root))
 		{
-			const auto& path = dir_name.path();
-			if (!is_directory(path))
+			return;
+		}
+
+		bool save_world = save_world_before_reload_;
+		for (const auto& entry : fs::directory_iterator(plugin_root))
+		{
+			try
 			{
-				continue;
-			}
+				const auto status = entry.symlink_status();
+				if (fs::is_symlink(status) || !fs::is_directory(status))
+				{
+					continue;
+				}
 
-			const auto filename = path.filename().stem().generic_string();
+				const auto plugin_name = entry.path().filename().string();
+				if (!IsValidPluginName(plugin_name))
+				{
+					continue;
+				}
 
-			const std::string plugin_folder = path.generic_string() + "/";
+				ResolvePluginDirectory(plugin_name);
+				const auto plugin_file_path = ResolvePluginFilePath(plugin_name, plugin_name + ".dll", false);
+				const auto new_plugin_file_path = ResolvePluginFilePath(plugin_name, plugin_name + ".dll.ArkApi", false);
+				if (!fs::exists(new_plugin_file_path) || FindPlugin(plugin_name) == loaded_plugins_.end())
+				{
+					continue;
+				}
 
-			const std::string plugin_file_path = plugin_folder + filename + ".dll";
-			const std::string new_plugin_file_path = plugin_folder + filename + ".dll.ArkApi";
-
-			if (fs::exists(new_plugin_file_path) && FindPlugin(filename) != loaded_plugins_.end())
-			{
-				// Save the world in case the unload/load procedure causes crash
 				if (save_world)
 				{
 					Log::GetLog()->info("Saving world before reloading plugins ...");
@@ -356,31 +535,27 @@ namespace API
 					game_mode->SaveWorld();
 #endif
 					Log::GetLog()->info("World save requested.");
-
-					save_world = false; // do not save again if multiple plugins are reloaded in this loop
+					save_world = false;
 				}
 
 				try
 				{
-					UnloadPlugin(filename);
-
-					copy_file(new_plugin_file_path, plugin_file_path, fs::copy_options::overwrite_existing);
+					UnloadPlugin(plugin_name);
+					fs::copy_file(new_plugin_file_path, plugin_file_path, fs::copy_options::overwrite_existing);
 					fs::remove(new_plugin_file_path);
-
-					// Wait 1 second before loading to let things clean up correctly...
-					// This will load the plugin in the next timer callback
-					//auto_reload_pending_plugins_.emplace_back(filename);
-
-					LoadPlugin(filename);
-
-					Log::GetLog()->info("Reloaded plugin - {}", filename);
+					LoadPlugin(plugin_name);
+					Log::GetLog()->info("Reloaded plugin - {}", plugin_name);
 				}
 				catch (const std::exception& error)
 				{
 					Log::GetLog()->warn("({}) {}", __FUNCTION__, error.what());
-					continue;
 				}
+			}
+			catch (const std::exception& error)
+			{
+				Log::GetLog()->warn("({}) {}", __FUNCTION__, error.what());
 			}
 		}
 	}
-} // namespace API
+
+	} // namespace API

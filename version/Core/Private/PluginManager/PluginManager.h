@@ -90,7 +90,6 @@ namespace API
 		static nlohmann::json ReadPluginPDBConfig(const std::string& plugin_name);
 		static nlohmann::json ReadSettingsConfig();
 
-		void CheckPluginsDependencies();
 
 		void DetectPluginChanges();
 
