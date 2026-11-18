@@ -323,7 +323,7 @@ namespace API
 			save_world_before_reload_ = settings["settings"].value("SaveWorldBeforePluginReload", true);
 		}
 
-		Log::GetLog()->info("Finished loading plugins; {} loaded", loaded_count);
+		Log::GetLog()->info("Finished loading plugins; {} loaded, {} unresolved", loaded_count, pending_plugins.size());
 	}
 
 	std::shared_ptr<Plugin>& PluginManager::LoadPlugin(const std::string& plugin_name) noexcept(false)
