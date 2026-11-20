@@ -21,7 +21,7 @@ namespace API
 		const auto data_section_header = std::find_if(first_section, end_section, [](_IMAGE_SECTION_HEADER hdr)
 		{
 			auto name = std::string(reinterpret_cast<char*>(hdr.Name), 8);
-			name.erase(std::remove(name.begin(), name.end(), '\\0'), name.end());
+			name.erase(std::remove(name.begin(), name.end(), '\0'), name.end());
 
 			return name == ".data";
 		});
