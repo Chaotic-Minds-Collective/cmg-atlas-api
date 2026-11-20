@@ -1,4 +1,5 @@
 #include "Offsets.h"
+#include "OffsetLookup.h"
 #include "Logger/Logger.h"
 
 namespace API
@@ -20,7 +21,7 @@ namespace API
 		const auto data_section_header = std::find_if(first_section, end_section, [](_IMAGE_SECTION_HEADER hdr)
 		{
 			auto name = std::string(reinterpret_cast<char*>(hdr.Name), 8);
-			name.erase(std::remove(name.begin(), name.end(), '\0'), name.end());
+			name.erase(std::remove(name.begin(), name.end(), '\\0'), name.end());
 
 			return name == ".data";
 		});
@@ -49,17 +50,29 @@ namespace API
 
 	DWORD64 Offsets::GetAddress(const void* base, const std::string& name)
 	{
-		return reinterpret_cast<DWORD64>(base) + static_cast<DWORD64>(offsets_dump_[name]);
+		intptr_t offset = 0;
+		if (!Detail::TryGetOffset(offsets_dump_, name, offset))
+			return 0;
+
+		return reinterpret_cast<DWORD64>(base) + static_cast<DWORD64>(offset);
 	}
 
 	LPVOID Offsets::GetAddress(const std::string& name)
 	{
-		return reinterpret_cast<LPVOID>(module_base_ + static_cast<DWORD64>(offsets_dump_[name]));
+		intptr_t offset = 0;
+		if (!Detail::TryGetOffset(offsets_dump_, name, offset))
+			return nullptr;
+
+		return reinterpret_cast<LPVOID>(module_base_ + static_cast<DWORD64>(offset));
 	}
 
 	LPVOID Offsets::GetDataAddress(const std::string& name)
 	{
-		return reinterpret_cast<LPVOID>(data_base_ + static_cast<DWORD64>(offsets_dump_[name]));
+		intptr_t offset = 0;
+		if (!Detail::TryGetOffset(offsets_dump_, name, offset))
+			return nullptr;
+
+		return reinterpret_cast<LPVOID>(data_base_ + static_cast<DWORD64>(offset));
 	}
 
 	BitField Offsets::GetBitField(const void* base, const std::string& name)
