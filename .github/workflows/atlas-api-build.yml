@@ -25,5 +25,15 @@ jobs:
       - name: Configure MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Test fail-closed offset lookup
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VSINSTALLDIR=%%i"
+          if not defined VSINSTALLDIR exit /b 1
+          call "%VSINSTALLDIR%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b 1
+          cl /nologo /std:c++17 /EHsc /W4 /WX tests\offset_lookup_test.cpp /Fe:offset_lookup_test.exe || exit /b 1
+          offset_lookup_test.exe || exit /b 1
+
       - name: Build ATLAS x64 configuration
         run: msbuild version.sln /m /p:Configuration=Atlas /p:Platform=x64 /p:BuildProjectReferences=true /verbosity:minimal
