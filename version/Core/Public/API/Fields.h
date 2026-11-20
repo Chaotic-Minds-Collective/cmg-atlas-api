@@ -22,7 +22,11 @@ RT NativeCall(nullptr_t, const std::string& funcName, Args&&... args)
 template <typename RT>
 RT GetNativeField(const void* _this, const std::string& field_name)
 {
-	return *reinterpret_cast<RT*>(GetAddress(_this, field_name));
+	const auto address = GetAddress(_this, field_name);
+	if (!address)
+		return RT{};
+
+	return *reinterpret_cast<RT*>(address);
 }
 
 template <typename RT>
