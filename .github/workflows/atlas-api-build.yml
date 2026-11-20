@@ -25,5 +25,11 @@ jobs:
       - name: Configure MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Test fail-closed offset lookup
+        shell: cmd
+        run: |
+          cl /nologo /std:c++17 /EHsc /W4 /WX tests\offset_lookup_test.cpp /Fe:offset_lookup_test.exe
+          offset_lookup_test.exe
+
       - name: Build ATLAS x64 configuration
         run: msbuild version.sln /m /p:Configuration=Atlas /p:Platform=x64 /p:BuildProjectReferences=true /verbosity:minimal
